@@ -1,14 +1,10 @@
-#!/usr/bin/env python3
-
 import os
-import requests  # HTTP 요청을 위한 모듈 추가
 import subprocess
 import time
+import requests
 from typing import Dict, Optional
 
-
 class ServiceManager:
-    # 초기화 함수
     def __init__(self, socat_port: int = 8081, sleep_duration: int = 3) -> None:
         self.socat_port: int = socat_port
         self.sleep_duration: int = sleep_duration
@@ -21,78 +17,104 @@ class ServiceManager:
         self.next_name: Optional[str] = None
         self.next_port: Optional[int] = None
 
-    # 현재 실행 중인 서비스를 찾는 함수
     def _find_current_service(self) -> None:
-        cmd: str = f"ps aux | grep 'socat -t0 TCP-LISTEN:{self.socat_port}' | grep -v grep | awk '{{print $NF}}'"
-        current_service: str = subprocess.getoutput(cmd)
-        if not current_service:
-            self.current_name, self.current_port = 'blog_2', self.services['blog_2']
-        else:
-            self.current_port = int(current_service.split(':')[-1])
-            self.current_name = next((name for name, port in self.services.items() if port == self.current_port), None)
+        try:
+            cmd = f"ps aux | grep 'socat -t0 TCP-LISTEN:{self.socat_port}' | grep -v grep"
+            result = subprocess.getoutput(cmd)
+            if result:
+                self.current_port = int(result.split(':')[-1])
+                self.current_name = next((name for name, port in self.services.items() if port == self.current_port), None)
+            else:
+                self.current_name, self.current_port = 'blog_2', self.services['blog_2']
+        except Exception as e:
+            print(f"Error finding current service: {e}")
 
-    # 다음에 실행할 서비스를 찾는 함수
     def _find_next_service(self) -> None:
         self.next_name, self.next_port = next(
             ((name, port) for name, port in self.services.items() if name != self.current_name),
             (None, None)
         )
 
-    # Docker 컨테이너를 제거하는 함수
     def _remove_container(self, name: str) -> None:
-        os.system(f"docker stop {name} 2> /dev/null")
-        os.system(f"docker rm -f {name} 2> /dev/null")
+        try:
+            subprocess.run(["docker", "stop", name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            print(f"Removed container: {name}")
+        except Exception as e:
+            print(f"Error removing container {name}: {e}")
 
-    # Docker 컨테이너를 실행하는 함수
     def _run_container(self, name: str, port: int) -> None:
-        os.system(
-            f"docker run -d --name={name} --restart unless-stopped -p {port}:8090 -e TZ=Asia/Seoul -v /dockerProjects/blog/volumes/gen:/gen --pull always ghcr.io/sik2/blog")
+        try:
+            result = subprocess.run([
+                "docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
+                "-p", f"{port}:8090", "-e", "TZ=Asia/Seoul",
+                "-v", "/dockerProjects/blog/volumes/gen:/gen", "--pull", "always",
+                "ghcr.io/sik2/blog"
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            if result.returncode == 0:
+                print(f"Successfully started container: {name}")
+            else:
+                print(f"Failed to start container {name}: {result.stderr.decode()}")
+        except Exception as e:
+            print(f"Error running container {name}: {e}")
 
     def _switch_port(self) -> None:
-        # Socat 포트를 전환하는 함수
-        cmd: str = f"ps aux | grep 'socat -t0 TCP-LISTEN:{self.socat_port}' | grep -v grep | awk '{{print $2}}'"
-        pid: str = subprocess.getoutput(cmd)
+        try:
+            cmd = f"ps aux | grep 'socat -t0 TCP-LISTEN:{self.socat_port}' | grep -v grep | awk '{'{print $2}'}'"
+            pid = subprocess.getoutput(cmd)
 
-        if pid:
-            os.system(f"kill -9 {pid} 2>/dev/null")
+            if pid:
+                os.system(f"kill -15 {pid}")  # Graceful termination
 
-        time.sleep(5)
+            time.sleep(5)
 
-        os.system(
-            f"nohup socat -t0 TCP-LISTEN:{self.socat_port},fork,reuseaddr TCP:localhost:{self.next_port} &>/dev/null &")
+            subprocess.run([
+                "nohup", "socat", f"-t0", f"TCP-LISTEN:{self.socat_port},fork,reuseaddr", f"TCP:localhost:{self.next_port}"
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # 서비스 상태를 확인하는 함수
+            print(f"Switched port to {self.next_port} using socat")
+        except Exception as e:
+            print(f"Error switching port: {e}")
 
     def _is_service_up(self, port: int) -> bool:
         url = f"http://127.0.0.1:{port}/actuator/health"
         try:
-            response = requests.get(url, timeout=5)  # 5초 이내 응답 없으면 예외 발생
+            response = requests.get(url, timeout=5)
             if response.status_code == 200 and response.json().get('status') == 'UP':
                 return True
         except requests.RequestException:
             pass
         return False
 
-    # 서비스를 업데이트하는 함수
     def update_service(self) -> None:
         self._find_current_service()
         self._find_next_service()
 
+        if not self.next_name or not self.next_port:
+            print("Error: Unable to determine next service.")
+            return
+
         self._remove_container(self.next_name)
         self._run_container(self.next_name, self.next_port)
 
-        # 새 서비스가 'UP' 상태가 될 때까지 기다림
-        while not self._is_service_up(self.next_port):
-            print(f"Waiting for {self.next_name} to be 'UP'...")
+        max_retries = 10
+        retries = 0
+        while not self._is_service_up(self.next_port) and retries < max_retries:
+            print(f"Waiting for {self.next_name} to be 'UP'... ({retries + 1}/{max_retries})")
             time.sleep(self.sleep_duration)
+            retries += 1
+
+        if retries == max_retries:
+            print(f"Error: Service {self.next_name} failed to start.")
+            return
 
         self._switch_port()
 
-        if self.current_name is not None:
+        if self.current_name:
             self._remove_container(self.current_name)
 
         print("Switched service successfully!")
-
 
 if __name__ == "__main__":
     manager = ServiceManager()
