@@ -77,10 +77,11 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           instance-ids: "i-0a9d89647ebca4aa0"
-          working-directory: /
           comment: Deploy
           command: |
             mkdir -p /dockerProjects/blog
-            curl -o /dockerProjects/blog/zero_downtime_deploy.py https://raw.githubusercontent.com/sik2/deploy-demo-01-25/main/infraScript/zero_downtime_deploy.py
+            curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                 -o /dockerProjects/blog/zero_downtime_deploy.py \
+                 https://raw.githubusercontent.com/sik2/deploy-demo-01-25/main/infraScript/zero_downtime_deploy.py
             chmod +x /dockerProjects/blog/zero_downtime_deploy.py
-            /dockerProjects/blog/zero_downtime_deploy.py
+            /dockerProjects/blog/zero_downtime_deploy.py || echo "Deployment script failed." >&2
