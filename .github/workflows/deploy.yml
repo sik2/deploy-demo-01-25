@@ -1,15 +1,14 @@
-name: 'deploy'
+name: "deploy"
 on:
   push:
     paths:
-      - '.github/workflows/**'
-      - 'src/**'
-      - 'build.gradle'
-      - 'Dockerfile'
-      - 'readme.md'
-      - 'infraScript/**'
+      - ".github/workflows/**"
+      - "src/**"
+      - "build.gradle"
+      - "Dockerfile"
+      - "readme.md"
     branches:
-      - 'main'
+      - "main"
 jobs:
   makeTagAndRelease:
     runs-on: ubuntu-latest
@@ -67,7 +66,7 @@ jobs:
             ghcr.io/${{ env.OWNER_LC }}/blog:latest
   deploy:
     runs-on: ubuntu-latest
-    needs: [ buildImageAndPush ]
+    needs: [buildImageAndPush]
     steps:
       - name: AWS SSM Send-Command
         uses: peterkimzz/aws-ssm-send-command@master
@@ -77,10 +76,23 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           instance-ids: "i-0a9d89647ebca4aa0"
-          working-directory: /
           comment: Deploy
           command: |
-            mkdir -p /dockerProjects/blog
-            curl -o /dockerProjects/blog/zero_downtime_deploy.py https://raw.githubusercontent.com/sik2/deploy-demo-01-25/main/infraScript/zero_downtime_deploy.py
-            chmod +x /dockerProjects/blog/zero_downtime_deploy.py
-            /dockerProjects/blog/zero_downtime_deploy.py
+            # 기존 컨테이너 중지 및 제거
+            docker stop blog || true
+            docker rm blog || true
+
+            # 새 이미지 pull 및 컨테이너 실행
+            docker pull ghcr.io/sik2/blog:latest
+
+            # 볼륨 디렉토리 생성
+            mkdir -p /dockerProjects/blog/volumes/gen
+
+            # 새 컨테이너 실행
+            docker run -d \
+              --name blog \
+              --restart unless-stopped \
+              -p 8081:8090 \
+              -e TZ=Asia/Seoul \
+              -v /dockerProjects/blog/volumes/gen:/gen \
+              ghcr.io/sik2/blog:latest
